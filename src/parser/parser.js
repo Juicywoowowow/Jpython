@@ -5,18 +5,18 @@ import * as Prefix from './prefix-parselets.js';
 import { INFIX_RULES } from './infix-parselets.js';
 
 const PREFIX_RULES = {
-  [TokenType.NUMBER]:     Prefix.parseNumber,
-  [TokenType.STRING]:     Prefix.parseString,
-  [TokenType.TRUE]:       Prefix.parseTrue,
-  [TokenType.FALSE]:      Prefix.parseFalse,
-  [TokenType.NONE]:       Prefix.parseNone,
+  [TokenType.NUMBER]: Prefix.parseNumber,
+  [TokenType.STRING]: Prefix.parseString,
+  [TokenType.TRUE]: Prefix.parseTrue,
+  [TokenType.FALSE]: Prefix.parseFalse,
+  [TokenType.NONE]: Prefix.parseNone,
   [TokenType.IDENTIFIER]: Prefix.parseIdentifier,
-  [TokenType.MINUS]:      Prefix.parseUnaryMinus,
-  [TokenType.NOT]:        Prefix.parseNot,
-  [TokenType.LPAREN]:     Prefix.parseGrouping,
-  [TokenType.LBRACKET]:   Prefix.parseList,
-  [TokenType.LBRACE]:     Prefix.parseDict,
-  [TokenType.LAMBDA]:     Prefix.parseLambda,
+  [TokenType.MINUS]: Prefix.parseUnaryMinus,
+  [TokenType.NOT]: Prefix.parseNot,
+  [TokenType.LPAREN]: Prefix.parseGrouping,
+  [TokenType.LBRACKET]: Prefix.parseList,
+  [TokenType.LBRACE]: Prefix.parseDict,
+  [TokenType.LAMBDA]: Prefix.parseLambda,
 };
 
 export class Parser {
@@ -267,6 +267,53 @@ export class Parser {
     return AST.ClassDefStmt(name, bases, body);
   }
 
+  parseTryStatement() {
+    const body = this.parseBlock();
+    const handlers = [];
+    let finallyBody = null;
+
+    this.skipNewlines();
+
+    while (this.check(TokenType.EXCEPT)) {
+      this.advance();
+      let exceptionType = null;
+      let alias = null;
+
+      if (!this.check(TokenType.COLON)) {
+        exceptionType = this.parseExpression();
+        if (this.matchToken(TokenType.AS)) {
+          alias = this.expect(TokenType.IDENTIFIER).value;
+        }
+      }
+
+      const handlerBody = this.parseBlock();
+      handlers.push({ type: exceptionType, alias, body: handlerBody });
+      this.skipNewlines();
+    }
+
+    if (this.check(TokenType.FINALLY)) {
+      this.advance();
+      finallyBody = this.parseBlock();
+    }
+
+    if (handlers.length === 0 && !finallyBody) {
+      throw new SyntaxError('SyntaxError: expected except or finally block');
+    }
+
+    return AST.TryStmt(body, handlers, finallyBody);
+  }
+
+  parseRaiseStatement() {
+    if (
+      this.check(TokenType.NEWLINE) ||
+      this.check(TokenType.DEDENT) ||
+      this.check(TokenType.EOF)
+    ) {
+      return AST.RaiseStmt();
+    }
+    return AST.RaiseStmt(this.parseExpression());
+  }
+
   parseStatement() {
     this.skipNewlines();
 
@@ -328,6 +375,16 @@ export class Parser {
     if (this.check(TokenType.PASS)) {
       this.advance();
       return AST.PassStmt();
+    }
+
+    if (this.check(TokenType.TRY)) {
+      this.advance();
+      return this.parseTryStatement();
+    }
+
+    if (this.check(TokenType.RAISE)) {
+      this.advance();
+      return this.parseRaiseStatement();
     }
 
     // Assignment or expression statement

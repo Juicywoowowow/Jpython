@@ -136,6 +136,15 @@ export function ContinueStmt() {
   return { type: 'ContinueStmt' };
 }
 
+export function TryStmt(body, handlers, finallyBody = null) {
+  // handlers: [{type: expr|null, alias: string|null, body: [stmts]}]
+  return { type: 'TryStmt', body, handlers, finallyBody };
+}
+
+export function RaiseStmt(value = null) {
+  return { type: 'RaiseStmt', value };
+}
+
 export function Block(statements) {
   return { type: 'Block', statements };
 }

@@ -27,6 +27,11 @@ export const TokenType = {
   CLASS: 'CLASS',
   PASS: 'PASS',
   LAMBDA: 'LAMBDA',
+  TRY: 'TRY',
+  EXCEPT: 'EXCEPT',
+  FINALLY: 'FINALLY',
+  RAISE: 'RAISE',
+  AS: 'AS',
 
   // Operators
   PLUS: 'PLUS',
@@ -84,4 +89,9 @@ export const KEYWORDS = {
   'class': TokenType.CLASS,
   'pass': TokenType.PASS,
   'lambda': TokenType.LAMBDA,
+  'try': TokenType.TRY,
+  'except': TokenType.EXCEPT,
+  'finally': TokenType.FINALLY,
+  'raise': TokenType.RAISE,
+  'as': TokenType.AS,
 };

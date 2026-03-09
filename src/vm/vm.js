@@ -12,7 +12,7 @@ import { PyClass, PyInstance } from './objects/py-class.js';
 import { coerceArithmetic, wrapNumber } from './objects/coerce.js';
 import { isTruthy } from './objects/truthy.js';
 import { Environment } from '../runtime/environment.js';
-import { addTracebackFrame, pythonError } from '../runtime/errors.js';
+import { addTracebackFrame, pythonError, JPythonError, normalizeRuntimeError } from '../runtime/errors.js';
 
 function contains(container, value) {
   if (typeof container.__contains__ === 'function') {
@@ -321,6 +321,80 @@ function makeDispatch() {
     env.set(names[args[0]], klass);
   };
 
+  table[Op.SETUP_TRY] = () => {
+    // Handled specially in the execute loop
+  };
+
+  table[Op.POP_TRY] = () => {
+    // Handled specially in the execute loop
+  };
+
+  table[Op.RAISE] = (regs, args, constants, names, env, vm) => {
+    const mode = args[1]; // 0 = raise new, 1 = re-raise
+    if (mode === 1) {
+      // Re-raise current exception
+      const current = env.vars.get('$current_exception');
+      if (current) {
+        throw current;
+      }
+      throw pythonError('RuntimeError', 'No active exception to re-raise');
+    }
+    // Raise new: args[0] is the value register
+    const value = regs[args[0]];
+    if (value instanceof PyInstance) {
+      // Raising an instance of a class, e.g. raise ValueError("msg")
+      const err = pythonError(value.klass.name, '');
+      err._pyInstance = value;
+      // Try to get message from the instance
+      try {
+        const msgAttr = value.__getattr__('message');
+        err.detail = msgAttr.__str__();
+      } catch {
+        // Try args
+        try {
+          const argsAttr = value.__getattr__('args');
+          err.detail = argsAttr.__str__();
+        } catch {
+          err.detail = value.__str__();
+        }
+      }
+      err.refreshMessage();
+      throw err;
+    }
+    if (value instanceof PyClass) {
+      // raise ValueError — call the class with no args to create instance
+      const instance = value.__call__([], [], vm);
+      const err = pythonError(value.name, '');
+      err._pyInstance = instance;
+      throw err;
+    }
+    if (value instanceof PyString) {
+      throw pythonError('Exception', value.value);
+    }
+    throw pythonError('TypeError', 'exceptions must derive from BaseException');
+  };
+
+  table[Op.MATCH_EXCEPT] = (regs, args, constants, names, env) => {
+    const typeObj = regs[args[1]];
+    const currentExc = env.vars.get('$current_exception');
+    if (!currentExc) {
+      regs[args[0]] = new PyBool(false);
+      return;
+    }
+    if (!(currentExc instanceof JPythonError)) {
+      regs[args[0]] = new PyBool(false);
+      return;
+    }
+    // Match by class name
+    if (typeObj instanceof PyClass) {
+      regs[args[0]] = new PyBool(currentExc.typeName === typeObj.name);
+    } else if (typeObj && typeObj.name) {
+      regs[args[0]] = new PyBool(currentExc.typeName === typeObj.name);
+    } else {
+      regs[args[0]] = new PyBool(false);
+    }
+  };
+
   table[Op.HALT] = () => HALT_SENTINEL;
 
   return table;
@@ -351,6 +425,7 @@ export class VM {
   execute(bytecode, env, frameName = '<module>') {
     const { instructions, constants, names } = bytecode;
     const registers = new Array(bytecode.registerCount ?? 0).fill(null);
+    const exceptionStack = []; // stack of { handlerPC }
     let pc = 0;
 
     try {
@@ -358,23 +433,55 @@ export class VM {
         const { op, args } = instructions[pc];
         pc++;
 
+        // Handle SETUP_TRY specially — push handler address
+        if (op === Op.SETUP_TRY) {
+          exceptionStack.push({ handlerPC: args[0] });
+          continue;
+        }
+
+        // Handle POP_TRY specially — pop handler from stack
+        if (op === Op.POP_TRY) {
+          exceptionStack.pop();
+          continue;
+        }
+
         const handler = DISPATCH[op];
         if (!handler) {
           throw new Error(`Unknown opcode: 0x${op.toString(16)}`);
         }
 
-        const result = handler(registers, args, constants, names, env, this);
+        try {
+          const result = handler(registers, args, constants, names, env, this);
 
-        if (result === RETURN_SENTINEL) {
-          this.registers = registers;
-          return registers._returnValue;
-        }
-        if (result === HALT_SENTINEL) {
-          this.registers = registers;
-          return NONE;
-        }
-        if (typeof result === 'number') {
-          pc = result;
+          if (result === RETURN_SENTINEL) {
+            this.registers = registers;
+            return registers._returnValue;
+          }
+          if (result === HALT_SENTINEL) {
+            this.registers = registers;
+            return NONE;
+          }
+          if (typeof result === 'number') {
+            pc = result;
+          }
+        } catch (innerErr) {
+          // Normalize the error
+          const pyErr = normalizeRuntimeError(innerErr);
+
+          if (exceptionStack.length > 0) {
+            const tryHandler = exceptionStack.pop();
+            // Store raw exception for MATCH_EXCEPT type checking
+            env.vars.set('$current_exception', pyErr);
+            // Store a PyString version for 'as e' alias binding
+            if (pyErr instanceof JPythonError) {
+              env.vars.set('$current_exception_value', new PyString(pyErr.detail || ''));
+            } else {
+              env.vars.set('$current_exception_value', new PyString(String(pyErr.message || pyErr)));
+            }
+            pc = tryHandler.handlerPC;
+          } else {
+            throw pyErr;
+          }
         }
       }
     } catch (err) {

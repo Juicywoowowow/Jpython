@@ -998,6 +998,126 @@ export class Compiler {
         break;
       }
 
+      case 'TryStmt': {
+        // Emit SETUP_TRY pointing to handler chain
+        const setupTry = this.emit(Op.SETUP_TRY, 0); // placeholder
+        this.regs.reset();
+
+        // Compile try body
+        for (const s of node.body) this.compileStmt(s);
+
+        // Pop try handler and jump over except blocks
+        this.emit(Op.POP_TRY);
+        this.regs.reset();
+
+        // If there's a finally, compile it in the normal path too
+        if (node.finallyBody) {
+          for (const s of node.finallyBody) this.compileStmt(s);
+        }
+
+        const skipHandlers = this.emit(Op.JMP, 0); // placeholder
+        this.regs.reset();
+
+        // Patch SETUP_TRY to jump here (start of handlers)
+        this.patch(setupTry, Op.SETUP_TRY, this.instructions.length);
+
+        const handlerExits = [];
+
+        if (node.handlers.length > 0) {
+          for (let i = 0; i < node.handlers.length; i++) {
+            const handler = node.handlers[i];
+
+            if (handler.type) {
+              // Typed except: check if exception matches
+              const typeReg = this.compileExpr(handler.type);
+              const matchReg = this.regs.alloc();
+              this.emit(Op.MATCH_EXCEPT, matchReg, typeReg);
+              const skipHandler = this.emit(Op.JMP_IF_FALSE, matchReg, 0);
+              this.regs.reset();
+
+              // Bind alias if present
+              if (handler.alias) {
+                const aliasReg = this.regs.alloc();
+                const excNameIdx = this.addName('$current_exception_value');
+                this.emit(Op.LOAD_VAR, aliasReg, excNameIdx);
+                const aliasNameIdx = this.addName(handler.alias);
+                this.emit(Op.STORE_VAR, aliasNameIdx, aliasReg);
+                this.regs.reset();
+              }
+
+              for (const s of handler.body) this.compileStmt(s);
+
+              // If there's a finally, compile it in the handler path too
+              if (node.finallyBody) {
+                for (const s of node.finallyBody) this.compileStmt(s);
+              }
+
+              handlerExits.push(this.emit(Op.JMP, 0));
+              this.regs.reset();
+
+              // Patch skip to next handler
+              this.patch(skipHandler, Op.JMP_IF_FALSE, matchReg, this.instructions.length);
+            } else {
+              // Bare except: catch all
+              // Bind alias if present
+              if (handler.alias) {
+                const aliasReg = this.regs.alloc();
+                const excNameIdx = this.addName('$current_exception_value');
+                this.emit(Op.LOAD_VAR, aliasReg, excNameIdx);
+                const aliasNameIdx = this.addName(handler.alias);
+                this.emit(Op.STORE_VAR, aliasNameIdx, aliasReg);
+                this.regs.reset();
+              }
+
+              for (const s of handler.body) this.compileStmt(s);
+
+              // If there's a finally, compile it in the handler path too
+              if (node.finallyBody) {
+                for (const s of node.finallyBody) this.compileStmt(s);
+              }
+
+              handlerExits.push(this.emit(Op.JMP, 0));
+              this.regs.reset();
+            }
+          }
+
+          // If no handler matched, re-raise: run finally then raise
+          if (node.finallyBody) {
+            for (const s of node.finallyBody) this.compileStmt(s);
+          }
+          const reraise = this.regs.alloc();
+          this.emit(Op.RAISE, reraise, 1); // 1 = re-raise current
+          this.regs.reset();
+        } else {
+          // try/finally without except: run finally then re-raise
+          if (node.finallyBody) {
+            for (const s of node.finallyBody) this.compileStmt(s);
+          }
+          const reraise = this.regs.alloc();
+          this.emit(Op.RAISE, reraise, 1); // re-raise
+          this.regs.reset();
+        }
+
+        const endAddr = this.instructions.length;
+        this.patch(skipHandlers, Op.JMP, endAddr);
+        for (const j of handlerExits) {
+          this.patch(j, Op.JMP, endAddr);
+        }
+        break;
+      }
+
+      case 'RaiseStmt': {
+        if (node.value) {
+          const reg = this.compileExpr(node.value);
+          this.emit(Op.RAISE, reg, 0); // 0 = raise new
+        } else {
+          const reg = this.regs.alloc();
+          this.emit(Op.RAISE, reg, 1); // 1 = re-raise current
+        }
+        this.regs.reset();
+        break;
+      }
+
       default:
         throw new Error(`Unknown statement node: ${node.type}`);
     }

@@ -48,6 +48,14 @@ function formatArgs(instruction, bytecode) {
       return `${formatRegister(args[0])}, ${formatRegisterList(args[1] || [])}`;
     case Op.LIST_APPEND:
       return `${formatRegister(args[0])}, ${formatRegister(args[1])}`;
+    case Op.SETUP_TRY:
+      return `handler=${args[0]}`;
+    case Op.POP_TRY:
+      return '';
+    case Op.RAISE:
+      return `${formatRegister(args[0])}, mode=${args[1] === 1 ? 're-raise' : 'new'}`;
+    case Op.MATCH_EXCEPT:
+      return `${formatRegister(args[0])}, ${formatRegister(args[1])}`;
     default:
       return args.map(arg => Array.isArray(arg)
         ? formatRegisterList(arg)

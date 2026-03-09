@@ -178,5 +178,74 @@ export function createBuiltins() {
 
       return new PySuper(receiver, startClass);
     }),
+
+    // Built-in exception classes
+    ...makeExceptionClasses(),
+  };
+}
+
+function makeExceptionClass(name, bases = []) {
+  const initFn = new PyBuiltin(`${name}.__init__`, (args) => {
+    const self = args[0];
+    if (args.length > 1) {
+      self.__setattr__('message', args[1]);
+    } else {
+      self.__setattr__('message', new PyString(''));
+    }
+    return NONE;
+  });
+
+  const strFn = new PyBuiltin(`${name}.__str__`, (args) => {
+    const self = args[0];
+    try {
+      return self.__getattr__('message');
+    } catch {
+      return new PyString('');
+    }
+  });
+
+  const reprFn = new PyBuiltin(`${name}.__repr__`, (args) => {
+    const self = args[0];
+    try {
+      const msg = self.__getattr__('message');
+      const msgStr = msg.__str__();
+      return new PyString(msgStr ? `${name}('${msgStr}')` : `${name}()`);
+    } catch {
+      return new PyString(`${name}()`);
+    }
+  });
+
+  const namespace = new Map();
+  namespace.set('__init__', initFn);
+  namespace.set('__str__', strFn);
+  namespace.set('__repr__', reprFn);
+  return new PyClass(name, bases, namespace);
+}
+
+function makeExceptionClasses() {
+  const BaseException = makeExceptionClass('BaseException');
+  const Exception = makeExceptionClass('Exception', [BaseException]);
+  const ValueError = makeExceptionClass('ValueError', [Exception]);
+  const TypeError_ = makeExceptionClass('TypeError', [Exception]);
+  const KeyError = makeExceptionClass('KeyError', [Exception]);
+  const IndexError = makeExceptionClass('IndexError', [Exception]);
+  const RuntimeError = makeExceptionClass('RuntimeError', [Exception]);
+  const ZeroDivisionError = makeExceptionClass('ZeroDivisionError', [Exception]);
+  const AttributeError = makeExceptionClass('AttributeError', [Exception]);
+  const NameError = makeExceptionClass('NameError', [Exception]);
+  const StopIteration = makeExceptionClass('StopIteration', [Exception]);
+
+  return {
+    BaseException,
+    Exception,
+    ValueError,
+    TypeError: TypeError_,
+    KeyError,
+    IndexError,
+    RuntimeError,
+    ZeroDivisionError,
+    AttributeError,
+    NameError,
+    StopIteration,
   };
 }
