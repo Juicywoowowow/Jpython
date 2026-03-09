@@ -1,0 +1,16 @@
+{
+  "name": "jpython",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "jpython": "./cli.js"
+  },
+  "scripts": {
+    "test": "node tests/run.js",
+    "start": "node cli.js"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
+  }
+}

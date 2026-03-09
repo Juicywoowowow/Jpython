@@ -1,0 +1,2 @@
+# expect: single
+print('single')

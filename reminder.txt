@@ -1,0 +1,1 @@
+✨ Tip: Use 'auggie session continue' or 'auggie session resume 1e902855-6338-4daa-91ea-95c39875539e' to resume your session

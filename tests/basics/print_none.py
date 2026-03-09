@@ -1,0 +1,2 @@
+# expect: None
+print(None)
