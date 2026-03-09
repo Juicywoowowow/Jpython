@@ -20,6 +20,7 @@ export class PyBool extends PyObject {
 
   __eq__(other) {
     if (other instanceof PyBool) return this.value === other.value;
+    if (other.type === 'int' || other.type === 'float') return (this.value ? 1 : 0) === other.value;
     return false;
   }
 }

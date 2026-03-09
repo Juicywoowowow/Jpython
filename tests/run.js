@@ -34,12 +34,13 @@ function parseExpected(source) {
   return lines;
 }
 
-function parseExpectError(source) {
+function parseExpectErrors(source) {
+  const lines = [];
   for (const line of source.split('\n')) {
     const match = line.match(/^#\s*expect_error:\s*(.*)$/);
-    if (match) return match[1];
+    if (match) lines.push(match[1]);
   }
-  return null;
+  return lines;
 }
 
 const testFiles = collectTests(TESTS_DIR).sort();
@@ -52,16 +53,17 @@ for (const file of testFiles) {
   const rel = relative(TESTS_DIR, file);
   const source = readFileSync(file, 'utf-8');
   const expectedLines = parseExpected(source);
-  const expectedError = parseExpectError(source);
+  const expectedErrors = parseExpectErrors(source);
+  const expectsError = expectedErrors.length > 0;
 
   try {
     const output = new OutputCapture();
     run(source, output);
     const actual = output.getLines();
 
-    if (expectedError) {
+    if (expectsError) {
       failed++;
-      failures.push({ file: rel, reason: `Expected error "${expectedError}" but ran successfully` });
+      failures.push({ file: rel, reason: `Expected error containing ${expectedErrors.map(msg => `"${msg}"`).join(', ')} but ran successfully` });
       console.log(`  FAIL  ${rel}`);
       continue;
     }
@@ -92,13 +94,14 @@ for (const file of testFiles) {
       console.log(`  FAIL  ${rel}`);
     }
   } catch (err) {
-    if (expectedError) {
-      if (err.message.includes(expectedError)) {
+    if (expectsError) {
+      const missing = expectedErrors.filter(expected => !err.message.includes(expected));
+      if (missing.length === 0) {
         passed++;
         console.log(`  PASS  ${rel} (expected error)`);
       } else {
         failed++;
-        failures.push({ file: rel, reason: `Expected error "${expectedError}" but got "${err.message}"` });
+        failures.push({ file: rel, reason: `Expected error containing ${missing.map(msg => `"${msg}"`).join(', ')} but got "${err.message}"` });
         console.log(`  FAIL  ${rel}`);
       }
     } else {

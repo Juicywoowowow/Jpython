@@ -15,7 +15,18 @@ export const TokenType = {
   ELIF: 'ELIF',
   ELSE: 'ELSE',
   WHILE: 'WHILE',
+  DEF: 'DEF',
+  RETURN: 'RETURN',
+  GLOBAL: 'GLOBAL',
+  NONLOCAL: 'NONLOCAL',
+  FOR: 'FOR',
+  IN: 'IN',
+  BREAK: 'BREAK',
+  CONTINUE: 'CONTINUE',
   PRINT: 'PRINT',
+  CLASS: 'CLASS',
+  PASS: 'PASS',
+  LAMBDA: 'LAMBDA',
 
   // Operators
   PLUS: 'PLUS',
@@ -31,11 +42,15 @@ export const TokenType = {
   GTE: 'GTE',         // >=
   ASSIGN: 'ASSIGN',   // =
 
+  DOT: 'DOT',
+
   // Punctuation
   LPAREN: 'LPAREN',
   RPAREN: 'RPAREN',
   LBRACKET: 'LBRACKET',
   RBRACKET: 'RBRACKET',
+  LBRACE: 'LBRACE',
+  RBRACE: 'RBRACE',
   COMMA: 'COMMA',
   COLON: 'COLON',
 
@@ -53,9 +68,20 @@ export const KEYWORDS = {
   'and': TokenType.AND,
   'or': TokenType.OR,
   'not': TokenType.NOT,
+  'def': TokenType.DEF,
+  'return': TokenType.RETURN,
+  'global': TokenType.GLOBAL,
+  'nonlocal': TokenType.NONLOCAL,
   'if': TokenType.IF,
   'elif': TokenType.ELIF,
   'else': TokenType.ELSE,
   'while': TokenType.WHILE,
+  'for': TokenType.FOR,
+  'in': TokenType.IN,
+  'break': TokenType.BREAK,
+  'continue': TokenType.CONTINUE,
   'print': TokenType.PRINT,
+  'class': TokenType.CLASS,
+  'pass': TokenType.PASS,
+  'lambda': TokenType.LAMBDA,
 };

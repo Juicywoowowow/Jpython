@@ -9,21 +9,89 @@ export function parseBinary(precedence, op) {
   };
 }
 
+export function parseNotIn(parser, left, token) {
+  parser.expect(TokenType.IN);
+  const right = parser.parseExpression(Precedence.COMPARISON);
+  return AST.BinaryExpr('not in', left, right);
+}
+
 export function parseCall(parser, left, token) {
   const args = [];
+  const kwargs = [];
+  const seenKeywords = new Set();
+  let sawKeyword = false;
+
   if (!parser.check(TokenType.RPAREN)) {
     do {
-      args.push(parser.parseExpression(Precedence.NONE));
+      if (parser.check(TokenType.IDENTIFIER) && parser.peekNext().type === TokenType.ASSIGN) {
+        sawKeyword = true;
+        const name = parser.advance().value;
+        parser.expect(TokenType.ASSIGN);
+        if (seenKeywords.has(name)) {
+          throw new SyntaxError(`SyntaxError: keyword argument repeated: ${name}`);
+        }
+        seenKeywords.add(name);
+        kwargs.push(AST.KeywordArg(name, parser.parseExpression(Precedence.NONE)));
+      } else {
+        if (sawKeyword) {
+          throw new SyntaxError('SyntaxError: positional argument follows keyword argument');
+        }
+        args.push(parser.parseExpression(Precedence.NONE));
+      }
     } while (parser.matchToken(TokenType.COMMA));
   }
   parser.expect(TokenType.RPAREN);
-  return AST.CallExpr(left, args);
+  return AST.CallExprWithKeywords(left, args, kwargs);
 }
 
 export function parseIndex(parser, left, token) {
-  const index = parser.parseExpression(Precedence.NONE);
+  // Check for slice: [start:stop:step]
+  if (parser.check(TokenType.COLON)) {
+    // [::...] or [:stop:...]
+    parser.advance();
+    let start = null;
+    let stop = null;
+    let step = null;
+
+    if (!parser.check(TokenType.COLON) && !parser.check(TokenType.RBRACKET)) {
+      stop = parser.parseExpression(Precedence.NONE);
+    }
+    if (parser.matchToken(TokenType.COLON)) {
+      if (!parser.check(TokenType.RBRACKET)) {
+        step = parser.parseExpression(Precedence.NONE);
+      }
+    }
+    parser.expect(TokenType.RBRACKET);
+    return AST.SliceExpr(left, start, stop, step);
+  }
+
+  const first = parser.parseExpression(Precedence.NONE);
+
+  if (parser.check(TokenType.COLON)) {
+    // [start:...] slice
+    parser.advance();
+    let stop = null;
+    let step = null;
+
+    if (!parser.check(TokenType.COLON) && !parser.check(TokenType.RBRACKET)) {
+      stop = parser.parseExpression(Precedence.NONE);
+    }
+    if (parser.matchToken(TokenType.COLON)) {
+      if (!parser.check(TokenType.RBRACKET)) {
+        step = parser.parseExpression(Precedence.NONE);
+      }
+    }
+    parser.expect(TokenType.RBRACKET);
+    return AST.SliceExpr(left, first, stop, step);
+  }
+
   parser.expect(TokenType.RBRACKET);
-  return AST.IndexExpr(left, index);
+  return AST.IndexExpr(left, first);
+}
+
+export function parseDot(parser, left, token) {
+  const attr = parser.expect(TokenType.IDENTIFIER).value;
+  return AST.DotExpr(left, attr);
 }
 
 export const INFIX_RULES = {
@@ -38,8 +106,11 @@ export const INFIX_RULES = {
   [TokenType.GT]:      { prec: Precedence.COMPARISON, fn: parseBinary(Precedence.COMPARISON, '>') },
   [TokenType.LTE]:     { prec: Precedence.COMPARISON, fn: parseBinary(Precedence.COMPARISON, '<=') },
   [TokenType.GTE]:     { prec: Precedence.COMPARISON, fn: parseBinary(Precedence.COMPARISON, '>=') },
+  [TokenType.IN]:      { prec: Precedence.COMPARISON, fn: parseBinary(Precedence.COMPARISON, 'in') },
+  [TokenType.NOT]:     { prec: Precedence.COMPARISON, fn: parseNotIn },
   [TokenType.AND]:     { prec: Precedence.AND,        fn: parseBinary(Precedence.AND, 'and') },
   [TokenType.OR]:      { prec: Precedence.OR,         fn: parseBinary(Precedence.OR, 'or') },
   [TokenType.LPAREN]:  { prec: Precedence.CALL,       fn: parseCall },
   [TokenType.LBRACKET]:{ prec: Precedence.INDEX,      fn: parseIndex },
+  [TokenType.DOT]:     { prec: Precedence.INDEX,      fn: parseDot },
 };

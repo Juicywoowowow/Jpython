@@ -21,6 +21,7 @@ export class PyFloat extends PyObject {
 
   __eq__(other) {
     if (other.type === 'int' || other.type === 'float') return this.value === other.value;
+    if (other.type === 'bool') return this.value === (other.value ? 1 : 0);
     return false;
   }
 }

@@ -224,8 +224,11 @@ export class Lexer {
         case ')': tokens.push(createToken(TokenType.RPAREN, ')', this.line, startCol)); break;
         case '[': tokens.push(createToken(TokenType.LBRACKET, '[', this.line, startCol)); break;
         case ']': tokens.push(createToken(TokenType.RBRACKET, ']', this.line, startCol)); break;
+        case '{': tokens.push(createToken(TokenType.LBRACE, '{', this.line, startCol)); break;
+        case '}': tokens.push(createToken(TokenType.RBRACE, '}', this.line, startCol)); break;
         case ',': tokens.push(createToken(TokenType.COMMA, ',', this.line, startCol)); break;
         case ':': tokens.push(createToken(TokenType.COLON, ':', this.line, startCol)); break;
+        case '.': tokens.push(createToken(TokenType.DOT, '.', this.line, startCol)); break;
         default:
           throw new SyntaxError(`Unexpected character '${ch}' at line ${this.line}:${startCol}`);
       }

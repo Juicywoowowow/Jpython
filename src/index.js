@@ -4,7 +4,7 @@ import { Compiler } from './compiler/compiler.js';
 import { VM } from './vm/vm.js';
 import { createBuiltins } from './runtime/builtins.js';
 
-export function run(source, output) {
+export function compileSource(source) {
   const lexer = new Lexer(source);
   const tokens = lexer.tokenize();
 
@@ -12,18 +12,29 @@ export function run(source, output) {
   const ast = parser.parse();
 
   const compiler = new Compiler();
-  const bytecode = compiler.compile(ast);
+  return compiler.compile(ast);
+}
 
+export function createRuntime(output) {
   const vm = new VM(output);
 
-  // Install builtins into the VM environment
   const builtins = createBuiltins();
   for (const [name, fn] of Object.entries(builtins)) {
     vm.env.set(name, fn);
   }
 
+  return vm;
+}
+
+export function executeInRuntime(source, vm) {
+  const bytecode = compileSource(source);
   vm.run(bytecode);
   return vm;
+}
+
+export function run(source, output) {
+  const vm = createRuntime(output);
+  return executeInRuntime(source, vm);
 }
 
 export { Lexer } from './lexer/lexer.js';

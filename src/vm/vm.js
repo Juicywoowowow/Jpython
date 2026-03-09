@@ -4,244 +4,384 @@ import { PyFloat } from './objects/py-float.js';
 import { PyString } from './objects/py-string.js';
 import { PyBool } from './objects/py-bool.js';
 import { PyList } from './objects/py-list.js';
+import { PyDict } from './objects/py-dict.js';
+import { PyTuple } from './objects/py-tuple.js';
 import { NONE } from './objects/py-none.js';
+import { PyFunction } from './objects/py-function.js';
+import { PyClass, PyInstance } from './objects/py-class.js';
 import { coerceArithmetic, wrapNumber } from './objects/coerce.js';
 import { isTruthy } from './objects/truthy.js';
 import { Environment } from '../runtime/environment.js';
+import { addTracebackFrame, pythonError } from '../runtime/errors.js';
 
-const NUM_REGISTERS = 16;
+function contains(container, value) {
+  if (typeof container.__contains__ === 'function') {
+    return container.__contains__(value);
+  }
+  throw pythonError('TypeError', `argument of type '${container.type}' is not iterable`);
+}
+
+// Dispatch table: opcode → handler(registers, args, constants, names, env, vm, pc) → pc
+// Handlers return undefined to continue normally, or a number to set pc, or a special sentinel.
+const RETURN_SENTINEL = Symbol('RETURN');
+const HALT_SENTINEL = Symbol('HALT');
+
+function makeDispatch() {
+  const table = new Array(256).fill(null);
+
+  table[Op.LOAD_CONST] = (regs, args, constants) => {
+    regs[args[0]] = constants[args[1]];
+  };
+
+  table[Op.LOAD_VAR] = (regs, args, constants, names, env) => {
+    regs[args[0]] = env.get(names[args[1]]);
+  };
+
+  table[Op.STORE_VAR] = (regs, args, constants, names, env) => {
+    env.set(names[args[0]], regs[args[1]]);
+  };
+
+  table[Op.ADD] = (regs, args) => {
+    const left = regs[args[1]];
+    const right = regs[args[2]];
+    if (typeof left.__add__ === 'function' && left instanceof PyInstance) {
+      regs[args[0]] = left.__add__(right);
+    } else if (left.type === 'str' && right.type === 'str') {
+      regs[args[0]] = new PyString(left.value + right.value);
+    } else if (left.type === 'list' && right.type === 'list') {
+      regs[args[0]] = new PyList([...left.items, ...right.items]);
+    } else if (left.type === 'tuple' && right.type === 'tuple') {
+      regs[args[0]] = new PyTuple([...left.items, ...right.items]);
+    } else {
+      const { l, r, isFloat } = coerceArithmetic(left, right);
+      regs[args[0]] = wrapNumber(l + r, isFloat);
+    }
+  };
+
+  table[Op.SUB] = (regs, args) => {
+    const { l, r, isFloat } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    regs[args[0]] = wrapNumber(l - r, isFloat);
+  };
+
+  table[Op.MUL] = (regs, args) => {
+    const left = regs[args[1]];
+    const right = regs[args[2]];
+    if (left.type === 'str' && right.type === 'int') {
+      regs[args[0]] = new PyString(right.value <= 0 ? '' : left.value.repeat(right.value));
+    } else if (left.type === 'int' && right.type === 'str') {
+      regs[args[0]] = new PyString(left.value <= 0 ? '' : right.value.repeat(left.value));
+    } else if (left.type === 'list' && right.type === 'int') {
+      regs[args[0]] = new PyList(repeatItems(left.items, right.value));
+    } else if (left.type === 'int' && right.type === 'list') {
+      regs[args[0]] = new PyList(repeatItems(right.items, left.value));
+    } else if (left.type === 'tuple' && right.type === 'int') {
+      regs[args[0]] = new PyTuple(repeatItems(left.items, right.value));
+    } else if (left.type === 'int' && right.type === 'tuple') {
+      regs[args[0]] = new PyTuple(repeatItems(right.items, left.value));
+    } else {
+      const { l, r, isFloat } = coerceArithmetic(left, right);
+      regs[args[0]] = wrapNumber(l * r, isFloat);
+    }
+  };
+
+  table[Op.DIV] = (regs, args) => {
+    const lv = regs[args[1]].value;
+    const rv = regs[args[2]].value;
+    if (rv === 0) throw new Error('ZeroDivisionError: division by zero');
+    regs[args[0]] = new PyFloat(lv / rv);
+  };
+
+  table[Op.MOD] = (regs, args) => {
+    const { l, r, isFloat } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    if (r === 0) throw new Error('ZeroDivisionError: modulo by zero');
+    regs[args[0]] = wrapNumber(((l % r) + r) % r, isFloat);
+  };
+
+  table[Op.NEG] = (regs, args) => {
+    const val = regs[args[1]];
+    regs[args[0]] = val.type === 'float' ? new PyFloat(-val.value) : new PyInt(-val.value);
+  };
+
+  table[Op.CMP_EQ] = (regs, args) => {
+    regs[args[0]] = new PyBool(regs[args[1]].__eq__(regs[args[2]]));
+  };
+
+  table[Op.CMP_NE] = (regs, args) => {
+    regs[args[0]] = new PyBool(!regs[args[1]].__eq__(regs[args[2]]));
+  };
+
+  table[Op.CMP_LT] = (regs, args) => {
+    const { l, r } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    regs[args[0]] = new PyBool(l < r);
+  };
+
+  table[Op.CMP_GT] = (regs, args) => {
+    const { l, r } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    regs[args[0]] = new PyBool(l > r);
+  };
+
+  table[Op.CMP_LE] = (regs, args) => {
+    const { l, r } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    regs[args[0]] = new PyBool(l <= r);
+  };
+
+  table[Op.CMP_GE] = (regs, args) => {
+    const { l, r } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    regs[args[0]] = new PyBool(l >= r);
+  };
+
+  table[Op.CMP_IN] = (regs, args) => {
+    regs[args[0]] = new PyBool(contains(regs[args[2]], regs[args[1]]));
+  };
+
+  table[Op.CMP_NOT_IN] = (regs, args) => {
+    regs[args[0]] = new PyBool(!contains(regs[args[2]], regs[args[1]]));
+  };
+
+  table[Op.AND] = (regs, args) => {
+    const left = regs[args[1]];
+    regs[args[0]] = isTruthy(left) ? regs[args[2]] : left;
+  };
+
+  table[Op.OR] = (regs, args) => {
+    const left = regs[args[1]];
+    regs[args[0]] = isTruthy(left) ? left : regs[args[2]];
+  };
+
+  table[Op.NOT] = (regs, args) => {
+    regs[args[0]] = new PyBool(!isTruthy(regs[args[1]]));
+  };
+
+  // JMP and JMP_IF_FALSE return new pc values
+  table[Op.JMP] = (regs, args) => args[0];
+
+  table[Op.JMP_IF_FALSE] = (regs, args) => {
+    if (!isTruthy(regs[args[0]])) return args[1];
+  };
+
+  table[Op.PRINT] = (regs, args, constants, names, env, vm) => {
+    const parts = [];
+    for (const reg of (args[0] || [])) {
+      parts.push(regs[reg].__str__());
+    }
+    vm.output.write(parts.join(' ') + '\n');
+  };
+
+  table[Op.CALL] = (regs, args, constants, names, env, vm) => {
+    const callee = regs[args[1]];
+    const callArgs = (args[2] || []).map(reg => regs[reg]);
+    const kwNameIdxs = args[3] || [];
+    const kwRegs = args[4] || [];
+    const kwargs = kwNameIdxs.map((idx, i) => ({ name: names[idx], value: regs[kwRegs[i]] }));
+    if (callee && typeof callee.__call__ === 'function') {
+      regs[args[0]] = callee.__call__(callArgs, kwargs, vm, env);
+    } else {
+      throw new Error(`TypeError: '${callee?.type}' object is not callable`);
+    }
+  };
+
+  table[Op.DEF_FUNC] = (regs, args, constants, names, env) => {
+    const codeObject = constants[args[1]];
+    const defaults = (args[2] || []).map(reg => regs[reg]);
+    env.set(
+      names[args[0]],
+      new PyFunction(
+        names[args[0]],
+        codeObject.params,
+        codeObject.requiredParamCount,
+        defaults,
+        codeObject.bytecode,
+        env,
+        codeObject.scopeInfo
+      )
+    );
+  };
+
+  table[Op.BUILD_FUNCTION] = (regs, args, constants, names, env) => {
+    const codeObject = constants[args[1]];
+    const defaults = (args[2] || []).map(reg => regs[reg]);
+    regs[args[0]] = new PyFunction(
+      codeObject.name,
+      codeObject.params,
+      codeObject.requiredParamCount,
+      defaults,
+      codeObject.bytecode,
+      env,
+      codeObject.scopeInfo
+    );
+  };
+
+  table[Op.RETURN] = (regs, args) => {
+    regs._returnValue = regs[args[0]] ?? NONE;
+    return RETURN_SENTINEL;
+  };
+
+  table[Op.INDEX_GET] = (regs, args) => {
+    const obj = regs[args[1]];
+    const idx = regs[args[2]];
+    if (typeof obj.__getitem__ === 'function') {
+      regs[args[0]] = obj.__getitem__(idx);
+    } else {
+      throw new Error(`TypeError: '${obj.type}' object is not subscriptable`);
+    }
+  };
+
+  table[Op.INDEX_SET] = (regs, args) => {
+    const obj = regs[args[0]];
+    const idx = regs[args[1]];
+    const val = regs[args[2]];
+    if (typeof obj.__setitem__ === 'function') {
+      obj.__setitem__(idx, val);
+    } else {
+      throw new Error(`TypeError: '${obj.type}' object does not support item assignment`);
+    }
+  };
+
+  table[Op.BUILD_LIST] = (regs, args) => {
+    regs[args[0]] = new PyList();
+  };
+
+  table[Op.BUILD_DICT] = (regs, args) => {
+    regs[args[0]] = new PyDict();
+  };
+
+  table[Op.BUILD_TUPLE] = (regs, args) => {
+    regs[args[0]] = new PyTuple((args[1] || []).map(reg => regs[reg]));
+  };
+
+  table[Op.LIST_APPEND] = (regs, args) => {
+    const list = regs[args[0]];
+    if (!(list instanceof PyList)) {
+      throw new Error(`TypeError: '${list?.type}' object does not support append construction`);
+    }
+    list.items.push(regs[args[1]]);
+  };
+
+  table[Op.MOVE] = (regs, args) => {
+    regs[args[0]] = regs[args[1]];
+  };
+
+  table[Op.SLICE] = (regs, args) => {
+    const obj = regs[args[1]];
+    const start = regs[args[2]];
+    const stop = regs[args[3]];
+    const step = regs[args[4]];
+    if (typeof obj.__getslice__ === 'function') {
+      regs[args[0]] = obj.__getslice__(start, stop, step);
+    } else {
+      throw new Error(`TypeError: '${obj.type}' object is not subscriptable`);
+    }
+  };
+
+  table[Op.ATTR_GET] = (regs, args, constants, names) => {
+    const obj = regs[args[1]];
+    const name = names[args[2]];
+    if (obj instanceof PyInstance) {
+      regs[args[0]] = obj.__getattr__(name);
+    } else if (obj instanceof PyClass) {
+      const val = obj.resolve(name);
+      if (val !== undefined) {
+        regs[args[0]] = val;
+      } else {
+        throw new Error(`AttributeError: type object '${obj.name}' has no attribute '${name}'`);
+      }
+    } else if (obj && typeof obj.__getattr__ === 'function') {
+      regs[args[0]] = obj.__getattr__(name);
+    } else {
+      throw new Error(`AttributeError: '${obj.type}' object has no attribute '${name}'`);
+    }
+  };
+
+  table[Op.ATTR_SET] = (regs, args, constants, names) => {
+    const obj = regs[args[0]];
+    const name = names[args[1]];
+    const val = regs[args[2]];
+    if (obj instanceof PyInstance) {
+      obj.__setattr__(name, val);
+    } else {
+      throw new Error(`AttributeError: '${obj.type}' object attribute '${name}' is read-only`);
+    }
+  };
+
+  table[Op.BUILD_CLASS] = (regs, args, constants, names, env, vm) => {
+    const className = regs[args[1]].__str__();
+    const bodyCode = constants[args[2]];
+    const baseRegs = args[3] || [];
+    const bases = baseRegs.map(reg => regs[reg]);
+
+    // Execute class body in a child environment to collect namespace
+    const classEnv = env.child();
+    vm.execute(bodyCode.bytecode, classEnv, className);
+
+    // Collect namespace from classEnv
+    const namespace = new Map(classEnv.vars);
+
+    const klass = new PyClass(className, bases, namespace);
+    classEnv.setLocal('__class__', klass);
+    env.set(names[args[0]], klass);
+  };
+
+  table[Op.HALT] = () => HALT_SENTINEL;
+
+  return table;
+}
+
+function repeatItems(items, count) {
+  if (count <= 0) return [];
+  const result = [];
+  for (let i = 0; i < count; i++) {
+    for (const item of items) result.push(item);
+  }
+  return result;
+}
+
+const DISPATCH = makeDispatch();
 
 export class VM {
   constructor(output) {
-    this.registers = new Array(NUM_REGISTERS).fill(null);
+    this.registers = [];
     this.env = new Environment();
     this.output = output || { write(str) { process.stdout.write(str); } };
   }
 
   run(bytecode) {
+    return this.execute(bytecode, this.env, '<module>');
+  }
+
+  execute(bytecode, env, frameName = '<module>') {
     const { instructions, constants, names } = bytecode;
+    const registers = new Array(bytecode.registerCount ?? 0).fill(null);
     let pc = 0;
 
-    while (pc < instructions.length) {
-      const { op, args } = instructions[pc];
-      pc++;
+    try {
+      while (pc < instructions.length) {
+        const { op, args } = instructions[pc];
+        pc++;
 
-      switch (op) {
-        case Op.LOAD_CONST: {
-          this.registers[args[0]] = constants[args[1]];
-          break;
-        }
-
-        case Op.LOAD_VAR: {
-          this.registers[args[0]] = this.env.get(names[args[1]]);
-          break;
-        }
-
-        case Op.STORE_VAR: {
-          this.env.set(names[args[0]], this.registers[args[1]]);
-          break;
-        }
-
-        case Op.ADD: {
-          const left = this.registers[args[1]];
-          const right = this.registers[args[2]];
-          if (left.type === 'str' && right.type === 'str') {
-            this.registers[args[0]] = new PyString(left.value + right.value);
-          } else if (left.type === 'list' && right.type === 'list') {
-            this.registers[args[0]] = new PyList([...left.items, ...right.items]);
-          } else {
-            const { l, r, isFloat } = coerceArithmetic(left, right);
-            this.registers[args[0]] = wrapNumber(l + r, isFloat);
-          }
-          break;
-        }
-
-        case Op.SUB: {
-          const { l, r, isFloat } = coerceArithmetic(this.registers[args[1]], this.registers[args[2]]);
-          this.registers[args[0]] = wrapNumber(l - r, isFloat);
-          break;
-        }
-
-        case Op.MUL: {
-          const left = this.registers[args[1]];
-          const right = this.registers[args[2]];
-          if (left.type === 'str' && right.type === 'int') {
-            this.registers[args[0]] = new PyString(left.value.repeat(right.value));
-          } else if (left.type === 'int' && right.type === 'str') {
-            this.registers[args[0]] = new PyString(right.value.repeat(left.value));
-          } else {
-            const { l, r, isFloat } = coerceArithmetic(left, right);
-            this.registers[args[0]] = wrapNumber(l * r, isFloat);
-          }
-          break;
-        }
-
-        case Op.DIV: {
-          const lv = this.registers[args[1]].value;
-          const rv = this.registers[args[2]].value;
-          if (rv === 0) throw new Error('ZeroDivisionError: division by zero');
-          this.registers[args[0]] = new PyFloat(lv / rv);
-          break;
-        }
-
-        case Op.MOD: {
-          const { l, r, isFloat } = coerceArithmetic(this.registers[args[1]], this.registers[args[2]]);
-          if (r === 0) throw new Error('ZeroDivisionError: modulo by zero');
-          this.registers[args[0]] = wrapNumber(((l % r) + r) % r, isFloat);
-          break;
-        }
-
-        case Op.NEG: {
-          const val = this.registers[args[1]];
-          if (val.type === 'float') {
-            this.registers[args[0]] = new PyFloat(-val.value);
-          } else {
-            this.registers[args[0]] = new PyInt(-val.value);
-          }
-          break;
-        }
-
-        case Op.CMP_EQ: {
-          const eq = this.registers[args[1]].__eq__(this.registers[args[2]]);
-          this.registers[args[0]] = new PyBool(eq);
-          break;
-        }
-
-        case Op.CMP_NE: {
-          const eq = this.registers[args[1]].__eq__(this.registers[args[2]]);
-          this.registers[args[0]] = new PyBool(!eq);
-          break;
-        }
-
-        case Op.CMP_LT: {
-          const { l, r } = coerceArithmetic(this.registers[args[1]], this.registers[args[2]]);
-          this.registers[args[0]] = new PyBool(l < r);
-          break;
-        }
-
-        case Op.CMP_GT: {
-          const { l, r } = coerceArithmetic(this.registers[args[1]], this.registers[args[2]]);
-          this.registers[args[0]] = new PyBool(l > r);
-          break;
-        }
-
-        case Op.CMP_LE: {
-          const { l, r } = coerceArithmetic(this.registers[args[1]], this.registers[args[2]]);
-          this.registers[args[0]] = new PyBool(l <= r);
-          break;
-        }
-
-        case Op.CMP_GE: {
-          const { l, r } = coerceArithmetic(this.registers[args[1]], this.registers[args[2]]);
-          this.registers[args[0]] = new PyBool(l >= r);
-          break;
-        }
-
-        case Op.AND: {
-          const left = this.registers[args[1]];
-          const right = this.registers[args[2]];
-          this.registers[args[0]] = isTruthy(left) ? right : left;
-          break;
-        }
-
-        case Op.OR: {
-          const left = this.registers[args[1]];
-          const right = this.registers[args[2]];
-          this.registers[args[0]] = isTruthy(left) ? left : right;
-          break;
-        }
-
-        case Op.NOT: {
-          const val = this.registers[args[1]];
-          this.registers[args[0]] = new PyBool(!isTruthy(val));
-          break;
-        }
-
-        case Op.JMP: {
-          pc = args[0];
-          break;
-        }
-
-        case Op.JMP_IF_FALSE: {
-          if (!isTruthy(this.registers[args[0]])) {
-            pc = args[1];
-          }
-          break;
-        }
-
-        case Op.PRINT: {
-          const startReg = args[0];
-          const count = args[1];
-          const parts = [];
-          for (let i = 0; i < count; i++) {
-            parts.push(this.registers[startReg + i].__str__());
-          }
-          this.output.write(parts.join(' ') + '\n');
-          break;
-        }
-
-        case Op.CALL: {
-          const callee = this.registers[args[1]];
-          const argStart = args[2];
-          const argCount = args[3];
-          const callArgs = [];
-          for (let i = 0; i < argCount; i++) {
-            callArgs.push(this.registers[argStart + i]);
-          }
-          if (callee && typeof callee.__call__ === 'function') {
-            this.registers[args[0]] = callee.__call__(callArgs);
-          } else {
-            throw new Error(`TypeError: '${callee?.type}' object is not callable`);
-          }
-          break;
-        }
-
-        case Op.INDEX_GET: {
-          const obj = this.registers[args[1]];
-          const idx = this.registers[args[2]];
-          if (typeof obj.__getitem__ === 'function') {
-            this.registers[args[0]] = obj.__getitem__(idx);
-          } else {
-            throw new Error(`TypeError: '${obj.type}' object is not subscriptable`);
-          }
-          break;
-        }
-
-        case Op.INDEX_SET: {
-          const obj = this.registers[args[0]];
-          const idx = this.registers[args[1]];
-          const val = this.registers[args[2]];
-          if (typeof obj.__setitem__ === 'function') {
-            obj.__setitem__(idx, val);
-          } else {
-            throw new Error(`TypeError: '${obj.type}' object does not support item assignment`);
-          }
-          break;
-        }
-
-        case Op.BUILD_LIST: {
-          const start = args[1];
-          const count = args[2];
-          const items = [];
-          for (let i = 0; i < count; i++) {
-            items.push(this.registers[start + i]);
-          }
-          this.registers[args[0]] = new PyList(items);
-          break;
-        }
-
-        case Op.MOVE: {
-          this.registers[args[0]] = this.registers[args[1]];
-          break;
-        }
-
-        case Op.HALT: {
-          return;
-        }
-
-        default:
+        const handler = DISPATCH[op];
+        if (!handler) {
           throw new Error(`Unknown opcode: 0x${op.toString(16)}`);
+        }
+
+        const result = handler(registers, args, constants, names, env, this);
+
+        if (result === RETURN_SENTINEL) {
+          this.registers = registers;
+          return registers._returnValue;
+        }
+        if (result === HALT_SENTINEL) {
+          this.registers = registers;
+          return NONE;
+        }
+        if (typeof result === 'number') {
+          pc = result;
+        }
       }
+    } catch (err) {
+      throw addTracebackFrame(err, frameName);
     }
+
+    this.registers = registers;
+    return NONE;
   }
 }

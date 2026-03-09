@@ -1,4 +1,6 @@
 import { PyObject } from './py-object.js';
+import { pythonError } from '../../runtime/errors.js';
+import { resolveSliceIndices } from './slice-utils.js';
 
 export class PyList extends PyObject {
   constructor(items = []) {
@@ -32,7 +34,7 @@ export class PyList extends PyObject {
     const i = index.value;
     const actual = i < 0 ? this.items.length + i : i;
     if (actual < 0 || actual >= this.items.length) {
-      throw new Error('IndexError: list index out of range');
+      throw pythonError('IndexError', 'list index out of range');
     }
     return this.items[actual];
   }
@@ -41,8 +43,17 @@ export class PyList extends PyObject {
     const i = index.value;
     const actual = i < 0 ? this.items.length + i : i;
     if (actual < 0 || actual >= this.items.length) {
-      throw new Error('IndexError: list assignment index out of range');
+      throw pythonError('IndexError', 'list assignment index out of range');
     }
     this.items[actual] = value;
+  }
+
+  __getslice__(start, stop, step) {
+    const indices = resolveSliceIndices(this.items.length, start, stop, step);
+    return new PyList(indices.map(i => this.items[i]));
+  }
+
+  __contains__(value) {
+    return this.items.some(item => item.__eq__(value));
   }
 }
