@@ -3,8 +3,9 @@ import { Precedence } from './precedence.js';
 import * as AST from './ast-nodes.js';
 
 export function parseNumber(parser, token) {
-  const val = token.value.includes('.') ? parseFloat(token.value) : parseInt(token.value, 10);
-  return AST.NumberLiteral(val);
+  const isFloat = token.value.includes('.');
+  const val = isFloat ? parseFloat(token.value) : parseInt(token.value, 10);
+  return AST.NumberLiteral(val, isFloat);
 }
 
 export function parseString(parser, token) {
@@ -69,10 +70,10 @@ export function parseList(parser, token) {
       // Parse first for clause
       const target = parser.expect(TokenType.IDENTIFIER).value;
       parser.expect(TokenType.IN);
-      const iterable = parser.parseExpression(Precedence.NONE);
+      const iterable = parser.parseExpression(Precedence.TERNARY);
       let condition = null;
       if (parser.matchToken(TokenType.IF)) {
-        condition = parser.parseExpression(Precedence.NONE);
+        condition = parser.parseExpression(Precedence.TERNARY);
       }
       clauses.push({ target, iterable, condition });
 
@@ -80,10 +81,10 @@ export function parseList(parser, token) {
       while (parser.matchToken(TokenType.FOR)) {
         const nextTarget = parser.expect(TokenType.IDENTIFIER).value;
         parser.expect(TokenType.IN);
-        const nextIterable = parser.parseExpression(Precedence.NONE);
+        const nextIterable = parser.parseExpression(Precedence.TERNARY);
         let nextCondition = null;
         if (parser.matchToken(TokenType.IF)) {
-          nextCondition = parser.parseExpression(Precedence.NONE);
+          nextCondition = parser.parseExpression(Precedence.TERNARY);
         }
         clauses.push({ target: nextTarget, iterable: nextIterable, condition: nextCondition });
       }

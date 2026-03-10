@@ -15,6 +15,8 @@ const BINARY_OPS = {
   '*': Op.MUL,
   '/': Op.DIV,
   '%': Op.MOD,
+  '//': Op.FLOORDIV,
+  '**': Op.POWER,
   '==': Op.CMP_EQ,
   '!=': Op.CMP_NE,
   '<': Op.CMP_LT,
@@ -32,6 +34,7 @@ export class Compiler {
     this.names = [];
     this.regs = new RegisterAllocator();
     this.loopStack = [];
+    this.cleanupStack = [];
     this.internalNameCounter = 0;
     this.outerFunctionScopes = options.outerFunctionScopes ?? [];
     this.currentScopeInfo = options.currentScopeInfo ?? null;
@@ -70,6 +73,12 @@ export class Compiler {
   freshInternalName(prefix) {
     const id = this.internalNameCounter++;
     return `$${prefix}_${id}`;
+  }
+
+  emitActiveCleanups() {
+    for (let i = this.cleanupStack.length - 1; i >= 0; i--) {
+      this.cleanupStack[i]();
+    }
   }
 
   analyzeFunctionScope(node) {
@@ -117,6 +126,14 @@ export class Compiler {
         case 'AssignStmt':
           registerBinding(stmt.name);
           break;
+        case 'TupleUnpackAssignStmt':
+          for (const target of stmt.targets) {
+            if (target.type === 'Identifier') registerBinding(target.name);
+          }
+          break;
+        case 'AugAssignStmt':
+          if (stmt.target.type === 'Identifier') registerBinding(stmt.target.name);
+          break;
         case 'ForStmt':
           registerBinding(stmt.target);
           visitStatements(stmt.body);
@@ -133,6 +150,18 @@ export class Compiler {
           if (stmt.elseBody) visitStatements(stmt.elseBody);
           break;
         case 'WhileStmt':
+          visitStatements(stmt.body);
+          break;
+        case 'TryStmt':
+          visitStatements(stmt.body);
+          for (const handler of stmt.handlers) {
+            if (handler.alias) registerBinding(handler.alias);
+            visitStatements(handler.body);
+          }
+          if (stmt.finallyBody) visitStatements(stmt.finallyBody);
+          break;
+        case 'WithStmt':
+          if (stmt.alias) registerBinding(stmt.alias);
           visitStatements(stmt.body);
           break;
         case 'GlobalStmt':
@@ -229,7 +258,9 @@ export class Compiler {
     switch (node.type) {
       case 'NumberLiteral': {
         const dst = this.createPlanTemp(state);
-        const obj = Number.isInteger(node.value) ? new PyInt(node.value) : new PyFloat(node.value);
+        const obj = node.isFloat || !Number.isInteger(node.value)
+          ? new PyFloat(node.value)
+          : new PyInt(node.value);
         const idx = this.addConstant(obj);
         state.ops.push({ kind: 'LOAD_CONST', dst, constIdx: idx });
         return dst;
@@ -529,7 +560,9 @@ export class Compiler {
     switch (node.type) {
       case 'NumberLiteral': {
         const reg = this.regs.alloc(preferredReg);
-        const obj = Number.isInteger(node.value) ? new PyInt(node.value) : new PyFloat(node.value);
+        const obj = node.isFloat || !Number.isInteger(node.value)
+          ? new PyFloat(node.value)
+          : new PyInt(node.value);
         const idx = this.addConstant(obj);
         this.emit(Op.LOAD_CONST, reg, idx);
         return reg;
@@ -679,6 +712,25 @@ export class Compiler {
         );
       }
 
+      case 'TernaryExpr': {
+        // body if condition else elseBody
+        const condReg = this.compileExpr(node.condition, preferredReg);
+        const jumpIfFalse = this.emit(Op.JMP_IF_FALSE, condReg, 0);
+        this.regs.reset();
+        const bodyReg = this.compileExpr(node.body, preferredReg);
+        const resultReg = bodyReg;
+        const jumpEnd = this.emit(Op.JMP, 0);
+        this.patch(jumpIfFalse, Op.JMP_IF_FALSE, condReg, this.instructions.length);
+        this.regs.reset();
+        const elseReg = this.compileExpr(node.elseBody, resultReg);
+        if (elseReg !== resultReg) {
+          this.emit(Op.MOVE, resultReg, elseReg);
+          this.regs.release(elseReg);
+        }
+        this.patch(jumpEnd, Op.JMP, this.instructions.length);
+        return resultReg;
+      }
+
       case 'ListComprehensionExpr': {
         const fnReg = this.compileAnonymousFunction(
           '<listcomp>',
@@ -740,6 +792,90 @@ export class Compiler {
     return dst;
   }
 
+  compileWithStatement(node) {
+    const managerName = this.freshInternalName('with_manager');
+    const exitName = this.freshInternalName('with_exit');
+
+    this.compileStmt(AST.AssignStmt(managerName, node.context));
+    this.compileStmt(
+      AST.AssignStmt(
+        exitName,
+        AST.DotExpr(AST.Identifier(managerName), '__exit__')
+      )
+    );
+
+    const enterCall = AST.CallExpr(
+      AST.DotExpr(AST.Identifier(managerName), '__enter__'),
+      []
+    );
+
+    if (node.alias) {
+      this.compileStmt(AST.AssignStmt(node.alias, enterCall));
+    } else {
+      this.compileStmt(AST.ExprStmt(enterCall));
+    }
+
+    const emitNormalExit = () => {
+      this.compileStmt(
+        AST.ExprStmt(
+          AST.CallExpr(AST.Identifier(exitName), [
+            AST.NoneLiteral(),
+            AST.NoneLiteral(),
+            AST.NoneLiteral(),
+          ])
+        )
+      );
+    };
+
+    const emitNonExceptionCleanup = () => {
+      this.emit(Op.POP_TRY);
+      this.regs.reset();
+      emitNormalExit();
+    };
+
+    const setupTry = this.emit(Op.SETUP_TRY, 0);
+    this.regs.reset();
+
+    this.cleanupStack.push(emitNonExceptionCleanup);
+    try {
+      for (const stmt of node.body) this.compileStmt(stmt);
+    } finally {
+      this.cleanupStack.pop();
+    }
+
+    this.emit(Op.POP_TRY);
+    this.regs.reset();
+    emitNormalExit();
+
+    const skipHandler = this.emit(Op.JMP, 0);
+    this.regs.reset();
+
+    this.patch(setupTry, Op.SETUP_TRY, this.instructions.length);
+
+    const handledReg = this.compileExpr(
+      AST.CallExpr(AST.Identifier(exitName), [
+        AST.Identifier('$current_exception_type'),
+        AST.Identifier('$current_exception_value'),
+        AST.NoneLiteral(),
+      ])
+    );
+    const reraiseJump = this.emit(Op.JMP_IF_FALSE, handledReg, 0);
+    this.regs.reset();
+
+    const suppressJump = this.emit(Op.JMP, 0);
+    this.regs.reset();
+
+    const reraiseAddr = this.instructions.length;
+    this.patch(reraiseJump, Op.JMP_IF_FALSE, handledReg, reraiseAddr);
+    const reraiseReg = this.regs.alloc();
+    this.emit(Op.RAISE, reraiseReg, 1);
+    this.regs.reset();
+
+    const endAddr = this.instructions.length;
+    this.patch(skipHandler, Op.JMP, endAddr);
+    this.patch(suppressJump, Op.JMP, endAddr);
+  }
+
   buildListComprehensionBody(node) {
     const resultName = this.freshInternalName('listcomp_result');
     const appendStmt = AST.AssignStmt(
@@ -774,6 +910,40 @@ export class Compiler {
         const nameIdx = this.addName(node.name);
         this.emit(Op.STORE_VAR, nameIdx, reg);
         this.regs.reset();
+        break;
+      }
+
+      case 'AugAssignStmt': {
+        const target = node.target;
+        const binExpr = AST.BinaryExpr(node.op, target, node.value);
+        if (target.type === 'Identifier') {
+          this.compileStmt(AST.AssignStmt(target.name, binExpr));
+        } else if (target.type === 'IndexExpr') {
+          this.compileStmt(AST.IndexAssignStmt(target.object, target.index, binExpr));
+        } else if (target.type === 'DotExpr') {
+          this.compileStmt(AST.DotAssignStmt(target.object, target.attr, binExpr));
+        }
+        break;
+      }
+
+      case 'TupleUnpackAssignStmt': {
+        // Evaluate all RHS values first into temp names
+        const tempNames = node.values.map((_, i) => this.freshInternalName('unpack'));
+        for (let i = 0; i < node.values.length; i++) {
+          this.compileStmt(AST.AssignStmt(tempNames[i], node.values[i]));
+        }
+        // Then assign each temp to its target
+        for (let i = 0; i < node.targets.length; i++) {
+          const target = node.targets[i];
+          const tempExpr = AST.Identifier(tempNames[i]);
+          if (target.type === 'Identifier') {
+            this.compileStmt(AST.AssignStmt(target.name, tempExpr));
+          } else if (target.type === 'IndexExpr') {
+            this.compileStmt(AST.IndexAssignStmt(target.object, target.index, tempExpr));
+          } else if (target.type === 'DotExpr') {
+            this.compileStmt(AST.DotAssignStmt(target.object, target.attr, tempExpr));
+          }
+        }
         break;
       }
 
@@ -853,7 +1023,15 @@ export class Compiler {
       }
 
       case 'ReturnStmt': {
-        const reg = node.value ? this.compileExpr(node.value) : this.compileExpr(AST.NoneLiteral());
+        let reg;
+        if (this.cleanupStack.length > 0) {
+          const returnName = this.freshInternalName('return_value');
+          this.compileStmt(AST.AssignStmt(returnName, node.value || AST.NoneLiteral()));
+          this.emitActiveCleanups();
+          reg = this.compileExpr(AST.Identifier(returnName));
+        } else {
+          reg = node.value ? this.compileExpr(node.value) : this.compileExpr(AST.NoneLiteral());
+        }
         this.emit(Op.RETURN, reg);
         this.regs.reset();
         break;
@@ -869,6 +1047,7 @@ export class Compiler {
         if (!loop) {
           throw new SyntaxError("SyntaxError: 'break' outside loop");
         }
+        this.emitActiveCleanups();
         loop.breakJumps.push(this.emit(Op.JMP, 0));
         this.regs.reset();
         break;
@@ -879,6 +1058,7 @@ export class Compiler {
         if (!loop) {
           throw new SyntaxError("SyntaxError: 'continue' not properly in loop");
         }
+        this.emitActiveCleanups();
         if (loop.continueTarget !== null) {
           this.emit(Op.JMP, loop.continueTarget);
         } else {
@@ -1103,6 +1283,11 @@ export class Compiler {
         for (const j of handlerExits) {
           this.patch(j, Op.JMP, endAddr);
         }
+        break;
+      }
+
+      case 'WithStmt': {
+        this.compileWithStatement(node);
         break;
       }
 

@@ -63,7 +63,7 @@ if (filenames.length > 0) {
     }
 
     try {
-      const bytecode = compileSource(trimmed);
+      const bytecode = compileSource(trimmed, { isRepl: true });
       console.log(cyan('--- bytecode ---'));
       console.log(dim(disassemble(bytecode)));
       console.log(cyan('--- output ---'));
@@ -77,7 +77,7 @@ if (filenames.length > 0) {
   });
 
   rl.on('close', () => {
-    console.log('\nBye!');
+    // removed bye message, do not add IT BACK. 
     process.exit(0);
   });
 } else {
@@ -103,7 +103,7 @@ if (filenames.length > 0) {
     }
 
     try {
-      executeInRuntime(trimmed, replVm);
+      executeInRuntime(trimmed, replVm, { isRepl: true });
     } catch (err) {
       console.error(err.message);
     }

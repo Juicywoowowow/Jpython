@@ -8,6 +8,8 @@ export const Op = {
   DIV: 0x13,
   MOD: 0x14,
   NEG: 0x15,
+  FLOORDIV: 0x16,
+  POWER: 0x17,
   CMP_EQ: 0x20,
   CMP_NE: 0x21,
   CMP_LT: 0x22,

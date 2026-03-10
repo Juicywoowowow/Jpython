@@ -267,6 +267,18 @@ export class Parser {
     return AST.ClassDefStmt(name, bases, body);
   }
 
+  parseWithStatement() {
+    const context = this.parseExpression();
+    let alias = null;
+
+    if (this.matchToken(TokenType.AS)) {
+      alias = this.expect(TokenType.IDENTIFIER).value;
+    }
+
+    const body = this.parseBlock();
+    return AST.WithStmt(context, alias, body);
+  }
+
   parseTryStatement() {
     const body = this.parseBlock();
     const handlers = [];
@@ -382,6 +394,11 @@ export class Parser {
       return this.parseTryStatement();
     }
 
+    if (this.check(TokenType.WITH)) {
+      this.advance();
+      return this.parseWithStatement();
+    }
+
     if (this.check(TokenType.RAISE)) {
       this.advance();
       return this.parseRaiseStatement();
@@ -389,6 +406,61 @@ export class Parser {
 
     // Assignment or expression statement
     const expr = this.parseExpression();
+
+    // Handle comma-separated targets: a, b = ... or arr[i], arr[j] = ...
+    if (this.check(TokenType.COMMA) && !this.check(TokenType.NEWLINE)) {
+      // Check if the current expr could be an assignment target
+      if (expr.type === 'Identifier' || expr.type === 'IndexExpr' || expr.type === 'DotExpr') {
+        const saved = this.pos;
+        const targets = [expr];
+        while (this.matchToken(TokenType.COMMA)) {
+          if (this.check(TokenType.ASSIGN) || this.check(TokenType.NEWLINE) || this.check(TokenType.EOF)) break;
+          targets.push(this.parseExpression(Precedence.OR));
+        }
+        if (this.check(TokenType.ASSIGN) && targets.length >= 2) {
+          this.advance();
+          // Validate all targets
+          for (const t of targets) {
+            if (t.type !== 'Identifier' && t.type !== 'IndexExpr' && t.type !== 'DotExpr') {
+              throw new SyntaxError(`Invalid assignment target at line ${this.peek().line}`);
+            }
+          }
+          // Parse RHS values
+          const values = [this.parseExpression(Precedence.OR)];
+          while (this.matchToken(TokenType.COMMA)) {
+            values.push(this.parseExpression(Precedence.OR));
+          }
+          if (values.length !== targets.length) {
+            throw new SyntaxError(
+              `ValueError: not enough values to unpack (expected ${targets.length}, got ${values.length})`
+            );
+          }
+          return AST.TupleUnpackAssignStmt(targets, values);
+        }
+        // Not an assignment, backtrack and fall through to expression/tuple handling
+        this.pos = saved;
+      }
+    }
+
+    // Augmented assignment: +=, -=, *=, /=, %=
+    const AUG_OPS = {
+      [TokenType.PLUS_ASSIGN]: '+',
+      [TokenType.MINUS_ASSIGN]: '-',
+      [TokenType.STAR_ASSIGN]: '*',
+      [TokenType.SLASH_ASSIGN]: '/',
+      [TokenType.PERCENT_ASSIGN]: '%',
+      [TokenType.DSLASH_ASSIGN]: '//',
+      [TokenType.DSTAR_ASSIGN]: '**',
+    };
+    const augOp = AUG_OPS[this.peek().type];
+    if (augOp !== undefined) {
+      this.advance();
+      if (expr.type !== 'Identifier' && expr.type !== 'IndexExpr' && expr.type !== 'DotExpr') {
+        throw new SyntaxError(`Invalid augmented assignment target at line ${this.peek().line}`);
+      }
+      const value = this.parseExpression();
+      return AST.AugAssignStmt(expr, augOp, value);
+    }
 
     if (this.check(TokenType.ASSIGN)) {
       this.advance();

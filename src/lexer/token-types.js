@@ -31,6 +31,7 @@ export const TokenType = {
   EXCEPT: 'EXCEPT',
   FINALLY: 'FINALLY',
   RAISE: 'RAISE',
+  WITH: 'WITH',
   AS: 'AS',
 
   // Operators
@@ -46,6 +47,15 @@ export const TokenType = {
   LTE: 'LTE',         // <=
   GTE: 'GTE',         // >=
   ASSIGN: 'ASSIGN',   // =
+  PLUS_ASSIGN: 'PLUS_ASSIGN',     // +=
+  MINUS_ASSIGN: 'MINUS_ASSIGN',   // -=
+  STAR_ASSIGN: 'STAR_ASSIGN',     // *=
+  SLASH_ASSIGN: 'SLASH_ASSIGN',   // /=
+  PERCENT_ASSIGN: 'PERCENT_ASSIGN', // %=
+  DSLASH: 'DSLASH',               // //
+  DSTAR: 'DSTAR',                 // **
+  DSLASH_ASSIGN: 'DSLASH_ASSIGN', // //=
+  DSTAR_ASSIGN: 'DSTAR_ASSIGN',   // **=
 
   DOT: 'DOT',
 
@@ -93,5 +103,6 @@ export const KEYWORDS = {
   'except': TokenType.EXCEPT,
   'finally': TokenType.FINALLY,
   'raise': TokenType.RAISE,
+  'with': TokenType.WITH,
   'as': TokenType.AS,
 };

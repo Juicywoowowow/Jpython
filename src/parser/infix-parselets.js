@@ -94,12 +94,21 @@ export function parseDot(parser, left, token) {
   return AST.DotExpr(left, attr);
 }
 
+export function parseTernary(parser, left, token) {
+  const condition = parser.parseExpression(Precedence.TERNARY);
+  parser.expect(TokenType.ELSE);
+  const elseBody = parser.parseExpression(Precedence.ASSIGNMENT);
+  return AST.TernaryExpr(left, condition, elseBody);
+}
+
 export const INFIX_RULES = {
   [TokenType.PLUS]:    { prec: Precedence.ADDITION,   fn: parseBinary(Precedence.ADDITION, '+') },
   [TokenType.MINUS]:   { prec: Precedence.ADDITION,   fn: parseBinary(Precedence.ADDITION, '-') },
   [TokenType.STAR]:    { prec: Precedence.MULTIPLY,   fn: parseBinary(Precedence.MULTIPLY, '*') },
   [TokenType.SLASH]:   { prec: Precedence.MULTIPLY,   fn: parseBinary(Precedence.MULTIPLY, '/') },
   [TokenType.PERCENT]: { prec: Precedence.MULTIPLY,   fn: parseBinary(Precedence.MULTIPLY, '%') },
+  [TokenType.DSLASH]:  { prec: Precedence.MULTIPLY,   fn: parseBinary(Precedence.MULTIPLY, '//') },
+  [TokenType.DSTAR]:   { prec: Precedence.POWER,      fn: parseBinary(Precedence.POWER - 1, '**') },
   [TokenType.EQ]:      { prec: Precedence.EQUALITY,   fn: parseBinary(Precedence.EQUALITY, '==') },
   [TokenType.NEQ]:     { prec: Precedence.EQUALITY,   fn: parseBinary(Precedence.EQUALITY, '!=') },
   [TokenType.LT]:      { prec: Precedence.COMPARISON, fn: parseBinary(Precedence.COMPARISON, '<') },
@@ -113,4 +122,5 @@ export const INFIX_RULES = {
   [TokenType.LPAREN]:  { prec: Precedence.CALL,       fn: parseCall },
   [TokenType.LBRACKET]:{ prec: Precedence.INDEX,      fn: parseIndex },
   [TokenType.DOT]:     { prec: Precedence.INDEX,      fn: parseDot },
+  [TokenType.IF]:      { prec: Precedence.TERNARY,    fn: parseTernary },
 };

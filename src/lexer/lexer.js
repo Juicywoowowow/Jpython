@@ -209,6 +209,36 @@ export class Lexer {
         continue;
       }
 
+      // Multi-char operators: //, **, //=, **=, +=, -=, *=, /=, %=
+      if (ch === '/' && this.source[this.pos + 1] === '/') {
+        this.advance(); this.advance();
+        if (this.pos < this.source.length && this.source[this.pos] === '=') {
+          this.advance();
+          tokens.push(createToken(TokenType.DSLASH_ASSIGN, '//=', this.line, startCol));
+        } else {
+          tokens.push(createToken(TokenType.DSLASH, '//', this.line, startCol));
+        }
+        continue;
+      }
+      if (ch === '*' && this.source[this.pos + 1] === '*') {
+        this.advance(); this.advance();
+        if (this.pos < this.source.length && this.source[this.pos] === '=') {
+          this.advance();
+          tokens.push(createToken(TokenType.DSTAR_ASSIGN, '**=', this.line, startCol));
+        } else {
+          tokens.push(createToken(TokenType.DSTAR, '**', this.line, startCol));
+        }
+        continue;
+      }
+
+      // Augmented assignment operators (+=, -=, *=, /=, %=)
+      if ((ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%') && this.source[this.pos + 1] === '=') {
+        this.advance(); this.advance();
+        const augTypes = { '+': TokenType.PLUS_ASSIGN, '-': TokenType.MINUS_ASSIGN, '*': TokenType.STAR_ASSIGN, '/': TokenType.SLASH_ASSIGN, '%': TokenType.PERCENT_ASSIGN };
+        tokens.push(createToken(augTypes[ch], ch + '=', this.line, startCol));
+        continue;
+      }
+
       // Single-char tokens
       this.advance();
       switch (ch) {

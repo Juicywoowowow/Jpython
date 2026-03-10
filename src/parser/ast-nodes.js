@@ -1,6 +1,6 @@
 // Expressions
-export function NumberLiteral(value) {
-  return { type: 'NumberLiteral', value };
+export function NumberLiteral(value, isFloat = false) {
+  return { type: 'NumberLiteral', value, isFloat };
 }
 
 export function StringLiteral(value) {
@@ -80,6 +80,18 @@ export function IndexAssignStmt(object, index, value) {
   return { type: 'IndexAssignStmt', object, index, value };
 }
 
+export function TupleUnpackAssignStmt(targets, values) {
+  return { type: 'TupleUnpackAssignStmt', targets, values };
+}
+
+export function AugAssignStmt(target, op, value) {
+  return { type: 'AugAssignStmt', target, op, value };
+}
+
+export function TernaryExpr(body, condition, elseBody) {
+  return { type: 'TernaryExpr', body, condition, elseBody };
+}
+
 export function DotAssignStmt(object, attr, value) {
   return { type: 'DotAssignStmt', object, attr, value };
 }
@@ -143,6 +155,10 @@ export function TryStmt(body, handlers, finallyBody = null) {
 
 export function RaiseStmt(value = null) {
   return { type: 'RaiseStmt', value };
+}
+
+export function WithStmt(context, alias, body) {
+  return { type: 'WithStmt', context, alias, body };
 }
 
 export function Block(statements) {

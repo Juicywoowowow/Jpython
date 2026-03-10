@@ -21,6 +21,36 @@ function contains(container, value) {
   throw pythonError('TypeError', `argument of type '${container.type}' is not iterable`);
 }
 
+function resolveCurrentExceptionType(env, err) {
+  if (!(err instanceof JPythonError)) return NONE;
+  try {
+    return env.get(err.typeName);
+  } catch {
+    return NONE;
+  }
+}
+
+function resolveCurrentExceptionValue(err, typeObj, vm) {
+  if (!(err instanceof JPythonError)) {
+    return new PyString(String(err?.message || err));
+  }
+
+  if (err._pyInstance) {
+    return err._pyInstance;
+  }
+
+  if (typeObj instanceof PyClass) {
+    try {
+      const args = err.detail ? [new PyString(err.detail)] : [];
+      return typeObj.__call__(args, [], vm);
+    } catch {
+      // Fall back to a plain string below.
+    }
+  }
+
+  return new PyString(err.detail || '');
+}
+
 // Dispatch table: opcode → handler(registers, args, constants, names, env, vm, pc) → pc
 // Handlers return undefined to continue normally, or a number to set pc, or a special sentinel.
 const RETURN_SENTINEL = Symbol('RETURN');
@@ -95,6 +125,17 @@ function makeDispatch() {
     const { l, r, isFloat } = coerceArithmetic(regs[args[1]], regs[args[2]]);
     if (r === 0) throw new Error('ZeroDivisionError: modulo by zero');
     regs[args[0]] = wrapNumber(((l % r) + r) % r, isFloat);
+  };
+
+  table[Op.FLOORDIV] = (regs, args) => {
+    const { l, r, isFloat } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    if (r === 0) throw new Error('ZeroDivisionError: integer division or modulo by zero');
+    regs[args[0]] = wrapNumber(Math.floor(l / r), isFloat);
+  };
+
+  table[Op.POWER] = (regs, args) => {
+    const { l, r, isFloat } = coerceArithmetic(regs[args[1]], regs[args[2]]);
+    regs[args[0]] = wrapNumber(l ** r, isFloat);
   };
 
   table[Op.NEG] = (regs, args) => {
@@ -472,12 +513,9 @@ export class VM {
             const tryHandler = exceptionStack.pop();
             // Store raw exception for MATCH_EXCEPT type checking
             env.vars.set('$current_exception', pyErr);
-            // Store a PyString version for 'as e' alias binding
-            if (pyErr instanceof JPythonError) {
-              env.vars.set('$current_exception_value', new PyString(pyErr.detail || ''));
-            } else {
-              env.vars.set('$current_exception_value', new PyString(String(pyErr.message || pyErr)));
-            }
+            const exceptionType = resolveCurrentExceptionType(env, pyErr);
+            env.vars.set('$current_exception_type', exceptionType);
+            env.vars.set('$current_exception_value', resolveCurrentExceptionValue(pyErr, exceptionType, this));
             pc = tryHandler.handlerPC;
           } else {
             throw pyErr;
